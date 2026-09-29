@@ -42,3 +42,8 @@ build/
 */.phd
 */.txt
 */.trc
+powerjob-data/
+
+powerjob-server/powerjob-server-starter/src/main/resources/application-dev.properties
+.claude/**
+CLAUDE.md

@@ -1,6 +1,7 @@
 package tech.powerjob.worker.autoconfigure;
 
 import tech.powerjob.common.RemoteConstant;
+import tech.powerjob.common.enums.Protocol;
 import tech.powerjob.worker.common.constants.StoreStrategy;
 import tech.powerjob.worker.core.processor.ProcessResult;
 import tech.powerjob.worker.core.processor.WorkflowContext;
@@ -80,25 +81,14 @@ public class PowerJobProperties {
     }
 
     @Deprecated
-    @DeprecatedConfigurationProperty(replacement = "powerjob.worker.enable-test-mode")
+    @DeprecatedConfigurationProperty(replacement = "powerjob.worker.allow-lazy-connect-server")
     public boolean isEnableTestMode() {
-        return getWorker().enableTestMode;
+        return getWorker().isAllowLazyConnectServer();
     }
 
     @Deprecated
     public void setEnableTestMode(boolean enableTestMode) {
-        getWorker().setEnableTestMode(enableTestMode);
-    }
-
-    @Deprecated
-    @DeprecatedConfigurationProperty(replacement = "powerjob.worker.tag")
-    public String getTag() {
-        return getWorker().tag;
-    }
-
-    @Deprecated
-    public void setTag(String tag) {
-        getWorker().setTag(tag);
+        getWorker().setAllowLazyConnectServer(enableTestMode);
     }
 
     /**
@@ -107,6 +97,12 @@ public class PowerJobProperties {
     @Setter
     @Getter
     public static class Worker {
+
+        /**
+         * Whether to enable PowerJob Worker
+         */
+        private boolean enabled = true;
+
         /**
          * Name of application, String type. Total length of this property should be no more than 255
          * characters. This is one of the required properties when registering a new application. This
@@ -116,8 +112,14 @@ public class PowerJobProperties {
         /**
          * Akka port of Powerjob-worker, optional value. Default value of this property is 27777.
          * If multiple PowerJob-worker nodes were deployed, different, unique ports should be assigned.
+         * Deprecated, please use 'port'
          */
+        @Deprecated
         private int akkaPort = RemoteConstant.DEFAULT_WORKER_PORT;
+        /**
+         * port
+         */
+        private Integer port;
         /**
          * Address(es) of Powerjob-server node(s). Ip:port or domain.
          * Example of single Powerjob-server node:
@@ -131,6 +133,10 @@ public class PowerJobProperties {
          */
         private String serverAddress;
         /**
+         * Protocol for communication between WORKER and server
+         */
+        private Protocol protocol = Protocol.AKKA;
+        /**
          * Local store strategy for H2 database. {@code disk} or {@code memory}.
          */
         private StoreStrategy storeStrategy = StoreStrategy.DISK;
@@ -140,18 +146,29 @@ public class PowerJobProperties {
          */
         private int maxResultLength = 8192;
         /**
-         * If test mode is set as true, Powerjob-worker no longer connects to the server or validates appName.
-         * Test mode is used for conditions that your have no powerjob-server in your develop env so you can't startup the application
+         * If allowLazyConnectServer is set as true, PowerJob worker allows launching without a direct connection to the server.
+         * allowLazyConnectServer is used for conditions that your have no powerjob-server in your develop env so you can't startup the application
          */
-        private boolean enableTestMode = false;
+        private boolean allowLazyConnectServer = false;
         /**
-         * Max length of appended workflow context value length. Appended workflow context value that is longer than the value will be ignore.
+         * Max length of appended workflow context value length. Appended workflow context value that is longer than the value will be ignored.
          * {@link WorkflowContext} max length for #appendedContextData
          */
         private int maxAppendedWfContextLength = 8192;
-        /**
-         * Worker Tag
-         */
+
         private String tag;
+        /**
+         * Max numbers of LightTaskTacker
+         */
+        private Integer maxLightweightTaskNum = 1024;
+        /**
+         * Max numbers of HeavyTaskTacker
+         */
+        private Integer maxHeavyweightTaskNum = 64;
+        /**
+         * Interval(s) of worker health report
+         */
+        private Integer healthReportInterval = 10;
+
     }
 }

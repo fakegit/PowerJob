@@ -1,40 +1,47 @@
 package tech.powerjob.server.core.instance;
 
-import tech.powerjob.common.enums.LogLevel;
-import tech.powerjob.common.OmsConstant;
-import tech.powerjob.common.enums.TimeExpressionType;
-import tech.powerjob.common.model.InstanceLogContent;
-import tech.powerjob.common.utils.CommonUtils;
-import tech.powerjob.common.utils.NetUtils;
-import tech.powerjob.common.utils.SegmentLock;
-import tech.powerjob.server.remote.server.redirector.DesignateServer;
-import tech.powerjob.server.common.utils.OmsFileUtils;
-import tech.powerjob.server.persistence.StringPage;
-import tech.powerjob.server.persistence.remote.model.JobInfoDO;
-import tech.powerjob.server.persistence.local.LocalInstanceLogDO;
-import tech.powerjob.server.persistence.local.LocalInstanceLogRepository;
-import tech.powerjob.server.persistence.mongodb.GridFsManager;
 import com.google.common.base.Stopwatch;
 import com.google.common.collect.Lists;
 import com.google.common.collect.Maps;
-import com.google.common.collect.Queues;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.commons.io.FileUtils;
+import org.apache.commons.lang3.StringUtils;
 import org.apache.commons.lang3.exception.ExceptionUtils;
 import org.apache.commons.lang3.time.FastDateFormat;
 import org.springframework.beans.BeanUtils;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.core.task.AsyncTaskExecutor;
 import org.springframework.scheduling.annotation.Async;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.support.TransactionTemplate;
 import org.springframework.util.CollectionUtils;
+import tech.powerjob.common.OmsConstant;
+import tech.powerjob.common.enums.LogLevel;
+import tech.powerjob.common.enums.TimeExpressionType;
+import tech.powerjob.common.model.InstanceLogContent;
+import tech.powerjob.common.utils.CommonUtils;
+import tech.powerjob.common.utils.NetUtils;
+import tech.powerjob.common.utils.SegmentLock;
+import tech.powerjob.server.common.constants.PJThreadPool;
+import tech.powerjob.server.common.utils.OmsFileUtils;
+import tech.powerjob.server.extension.dfs.*;
+import tech.powerjob.server.persistence.StringPage;
+import tech.powerjob.server.persistence.local.LocalInstanceLogDO;
+import tech.powerjob.server.persistence.local.LocalInstanceLogRepository;
+import tech.powerjob.server.persistence.remote.model.JobInfoDO;
+import tech.powerjob.server.persistence.storage.Constants;
+import tech.powerjob.server.remote.server.redirector.DesignateServer;
 
 import javax.annotation.Resource;
 import java.io.*;
+import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.Map;
-import java.util.concurrent.*;
+import java.util.Optional;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
@@ -53,13 +60,15 @@ public class InstanceLogService {
 
     @Resource
     private InstanceMetadataService instanceMetadataService;
+
     @Resource
-    private GridFsManager gridFsManager;
+    private DFsService dFsService;
     /**
      * 本地数据库操作bean
      */
     @Resource(name = "localTransactionTemplate")
     private TransactionTemplate localTransactionTemplate;
+
     @Resource
     private LocalInstanceLogRepository localInstanceLogRepository;
 
@@ -67,7 +76,14 @@ public class InstanceLogService {
      * 本地维护了在线日志的任务实例ID
      */
     private final Map<Long, Long> instanceId2LastReportTime = Maps.newConcurrentMap();
-    private final ExecutorService workerPool;
+
+    @Resource(name = PJThreadPool.BACKGROUND_POOL)
+    private AsyncTaskExecutor powerJobBackgroundPool;
+
+    @Value("${server.servlet.context-path:#{null}}")
+    private String servletContextPath;
+
+    private static final String DOWNLOAD_URL_PATTERN = "http://%s:%d%s/instance/downloadLog?instanceId=%d";
 
     /**
      *  分段锁
@@ -83,20 +99,18 @@ public class InstanceLogService {
      */
     private static final int MAX_LINE_COUNT = 100;
     /**
-     * 过期时间
+     * 更新中的日志缓存时间
      */
-    private static final long EXPIRE_INTERVAL_MS = 60000;
+    private static final long LOG_CACHE_TIME = 10000;
 
-    public InstanceLogService() {
-        int coreSize = Runtime.getRuntime().availableProcessors();
-        workerPool = new ThreadPoolExecutor(coreSize, coreSize, 1, TimeUnit.MINUTES, Queues.newLinkedBlockingQueue());
-    }
+    private static final String NO_ONLINE_LOG = "SYSTEM: There is no online log for this job instance.";
 
     /**
      * 提交日志记录，持久化到本地数据库中
      * @param workerAddress 上报机器地址
      * @param logs 任务实例运行时日志
      */
+    @Async(value = PJThreadPool.LOCAL_DB_POOL)
     public void submitLogs(String workerAddress, List<InstanceLogContent> logs) {
 
         List<LocalInstanceLogDO> logList = logs.stream().map(x -> {
@@ -168,7 +182,8 @@ public class InstanceLogService {
      */
     @DesignateServer
     public String fetchDownloadUrl(Long appId, Long instanceId) {
-        String url = "http://" + NetUtils.getLocalHost() + ":" + port + "/instance/downloadLog?instanceId=" + instanceId;
+        String path = Optional.ofNullable(servletContextPath).orElse(StringUtils.EMPTY);
+        String url = String.format(DOWNLOAD_URL_PATTERN, NetUtils.getLocalHost(), port, path, instanceId);
         log.info("[InstanceLog-{}] downloadURL for appId[{}]: {}", instanceId, appId, url);
         return url;
     }
@@ -190,12 +205,13 @@ public class InstanceLogService {
      * @return 异步结果
      */
     private Future<File> prepareLogFile(long instanceId) {
-        return workerPool.submit(() -> {
+        return powerJobBackgroundPool.submit(() -> {
             // 在线日志还在不断更新，需要使用本地数据库中的数据
             if (instanceId2LastReportTime.containsKey(instanceId)) {
                 return genTemporaryLogFile(instanceId);
             }
-            return genStableLogFile(instanceId);
+            File stableLogFile = genStableLogFile(instanceId);
+            return stableLogFile == null ? genUnavailableLogFile(instanceId) : stableLogFile;
         });
     }
 
@@ -203,22 +219,28 @@ public class InstanceLogService {
      * 将本地的任务实例运行日志同步到 mongoDB 存储，在任务执行结束后异步执行
      * @param instanceId 任务实例ID
      */
-    @Async("omsBackgroundPool")
+    @Async(PJThreadPool.BACKGROUND_POOL)
     public void sync(Long instanceId) {
 
         Stopwatch sw = Stopwatch.createStarted();
         try {
             // 先持久化到本地文件
             File stableLogFile = genStableLogFile(instanceId);
-            // 将文件推送到 MongoDB
-            if (gridFsManager.available()) {
-                try {
-                    gridFsManager.store(stableLogFile, GridFsManager.LOG_BUCKET, genMongoFileName(instanceId));
-                    log.info("[InstanceLog-{}] push local instanceLogs to mongoDB succeed, using: {}.", instanceId, sw.stop());
-                }catch (Exception e) {
-                    log.warn("[InstanceLog-{}] push local instanceLogs to mongoDB failed.", instanceId, e);
-                }
+            if (stableLogFile == null) {
+                // No report/archive yet: never upload a display message or discard a later report.
+                return;
             }
+            // 将文件推送到 MongoDB
+
+            FileLocation dfsFL = new FileLocation().setBucket(Constants.LOG_BUCKET).setName(genMongoFileName(instanceId));
+
+            try {
+                dFsService.store(new StoreRequest().setLocalFile(stableLogFile).setFileLocation(dfsFL));
+                log.info("[InstanceLog-{}] push local instanceLogs to mongoDB succeed, using: {}.", instanceId, sw.stop());
+            }catch (Exception e) {
+                log.warn("[InstanceLog-{}] push local instanceLogs to mongoDB failed.", instanceId, e);
+            }
+
         }catch (Exception e) {
             log.warn("[InstanceLog-{}] sync local instanceLogs failed.", instanceId, e);
         }
@@ -242,7 +264,7 @@ public class InstanceLogService {
             return localTransactionTemplate.execute(status -> {
                 File f = new File(path);
                 // 如果文件存在且有效，则不再重新构建日志文件（这个判断也需要放在锁内，否则构建到一半的文件会被返回）
-                if (f.exists() && (System.currentTimeMillis() - f.lastModified()) < EXPIRE_INTERVAL_MS) {
+                if (f.exists() && (System.currentTimeMillis() - f.lastModified()) < LOG_CACHE_TIME) {
                     return f;
                 }
                 try {
@@ -273,11 +295,16 @@ public class InstanceLogService {
             return localTransactionTemplate.execute(status -> {
 
                 File f = new File(path);
-                if (f.exists()) {
-                    return f;
-                }
-
                 try {
+                    if (f.exists()) {
+                        // Older Servers cached the no-log message as a final file. Only invalidate
+                        // that exact placeholder; real stable logs remain immutable and reusable.
+                        if (f.length() != NO_ONLINE_LOG.length()
+                                || !NO_ONLINE_LOG.equals(FileUtils.readFileToString(f, StandardCharsets.UTF_8))) {
+                            return f;
+                        }
+                        FileUtils.forceDelete(f);
+                    }
                     // 创建父文件夹（文件在开流时自动会被创建）
                     FileUtils.forceMkdirParent(f);
 
@@ -288,17 +315,13 @@ public class InstanceLogService {
                         }
                     }else {
 
-                        if (!gridFsManager.available()) {
-                            OmsFileUtils.string2File("SYSTEM: There is no local log for this task now, you need to use mongoDB to store the past logs.", f);
-                            return f;
+                        FileLocation dfl = new FileLocation().setBucket(Constants.LOG_BUCKET).setName(genMongoFileName(instanceId));
+                        Optional<FileMeta> dflMetaOpt = dFsService.fetchFileMeta(dfl);
+                        if (!dflMetaOpt.isPresent()) {
+                            return null;
                         }
 
-                        // 否则从 mongoDB 拉取数据（对应后期查询的情况）
-                        if (!gridFsManager.exists(GridFsManager.LOG_BUCKET, genMongoFileName(instanceId))) {
-                            OmsFileUtils.string2File("SYSTEM: There is no online log for this job instance.", f);
-                            return f;
-                        }
-                        gridFsManager.download(f, GridFsManager.LOG_BUCKET, genMongoFileName(instanceId));
+                        dFsService.download(new DownloadRequest().setTarget(f).setFileLocation(dfl));
                     }
                     return f;
                 }catch (Exception e) {
@@ -307,6 +330,24 @@ public class InstanceLogService {
                 }
             });
         }finally {
+            segmentLock.unlock(lockId);
+        }
+    }
+
+    /** A display-only message, separate from both live and final log caches. */
+    private File genUnavailableLogFile(long instanceId) {
+        File file = new File(OmsFileUtils.genLogDirPath() + instanceId + "-unavailable.log");
+        int lockId = ("unavailableFileLock-" + instanceId).hashCode();
+        try {
+            segmentLock.lockInterruptibleSafe(lockId);
+            if (!file.exists()) {
+                FileUtils.forceMkdirParent(file);
+                OmsFileUtils.string2File(NO_ONLINE_LOG, file);
+            }
+            return file;
+        } catch (IOException e) {
+            throw new UncheckedIOException(e);
+        } finally {
             segmentLock.unlock(lockId);
         }
     }
@@ -345,7 +386,7 @@ public class InstanceLogService {
     }
 
 
-    @Async("omsTimingPool")
+    @Async(PJThreadPool.TIMING_POOL)
     @Scheduled(fixedDelay = 120000)
     public void timingCheck() {
 
@@ -386,6 +427,44 @@ public class InstanceLogService {
     }
     private static String genMongoFileName(long instanceId) {
         return String.format("oms-%d.log", instanceId);
+    }
+
+    /**
+     * description  在重跑之前移除老的文件，避免重跑后还看到的是之前的示例日志。
+     * 因为当重跑完读取稳定日志的时候 目前逻辑会先判断本地文件是否存在 若存在则直接返回了 故需要先移除掉
+     * 参考：tech.powerjob.server.core.instance.InstanceLogService#genStableLogFile(long)
+     * @author jian chen jiang
+     * date 2024/2/5 17:01
+     * @param instanceId
+     * @return void
+     */
+    public void removeOldFile(Long instanceId) {
+        // 库中的数据不删，删了就会丢失全部的历史日志
+        try {
+            //删除本地缓存
+            String s = genLogFilePath(instanceId, true);
+            File file = new File(s);
+            if(!file.exists()){
+                return;
+            }
+            boolean delete = file.delete();
+            if(!delete){
+                log.warn("[InstanceLogService] delete old logs{} for instance: {} failed.", s,instanceId);
+            }
+            //删除临时文件
+            String tempFilePath = genLogFilePath(instanceId, false);
+            File tempFile = new File(tempFilePath);
+            if(!tempFile.exists()){
+                return;
+            }
+            delete = tempFile.delete();
+            if(!delete){
+                log.warn("[InstanceLogService] delete old temp logs{} for instance: {} failed.", s,instanceId);
+            }
+        } catch (Throwable t) {
+            log.error("[InstanceLogService] delete old logs for instance[{}] failed.", instanceId, t);
+        }
+
     }
 
 }

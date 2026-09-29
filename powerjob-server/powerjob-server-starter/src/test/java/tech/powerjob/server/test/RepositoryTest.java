@@ -1,23 +1,24 @@
 package tech.powerjob.server.test;
 
+import org.assertj.core.util.Lists;
+import org.junit.jupiter.api.Test;
+import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.data.domain.PageRequest;
+import org.springframework.test.annotation.Rollback;
+import org.springframework.transaction.annotation.Transactional;
 import tech.powerjob.common.enums.InstanceStatus;
 import tech.powerjob.common.enums.TimeExpressionType;
 import tech.powerjob.common.enums.WorkflowInstanceStatus;
 import tech.powerjob.common.utils.NetUtils;
-import tech.powerjob.server.common.constants.SwitchableStatus;
+import tech.powerjob.common.enums.SwitchableStatus;
 import tech.powerjob.server.persistence.remote.model.InstanceInfoDO;
 import tech.powerjob.server.persistence.remote.model.JobInfoDO;
 import tech.powerjob.server.persistence.remote.model.OmsLockDO;
+import tech.powerjob.server.persistence.remote.model.brief.BriefInstanceInfo;
 import tech.powerjob.server.persistence.remote.repository.InstanceInfoRepository;
 import tech.powerjob.server.persistence.remote.repository.JobInfoRepository;
 import tech.powerjob.server.persistence.remote.repository.OmsLockRepository;
 import tech.powerjob.server.persistence.remote.repository.WorkflowInstanceInfoRepository;
-import org.assertj.core.util.Lists;
-import org.junit.Test;
-import org.junit.runner.RunWith;
-import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.test.context.junit4.SpringRunner;
-import org.springframework.transaction.annotation.Transactional;
 
 import javax.annotation.Resource;
 import java.util.Date;
@@ -30,7 +31,6 @@ import java.util.List;
  * @since 2020/4/5
  */
 //@ActiveProfiles("daily")
-@RunWith(SpringRunner.class)
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
 public class RepositoryTest {
 
@@ -48,11 +48,11 @@ public class RepositoryTest {
      */
     @Test
     @Transactional
+    @Rollback
     public void testBatchLock() {
-
         List<OmsLockDO> locks = Lists.newArrayList();
         for (int i = 0; i < 10; i++) {
-            OmsLockDO lockDO = new OmsLockDO("lock" + i, NetUtils.getLocalHost(), 10000L);
+            OmsLockDO lockDO = new OmsLockDO("lock" + i, NetUtils.getLocalHost4Test(), 10000L);
             locks.add(lockDO);
         }
         omsLockRepository.saveAll(locks);
@@ -62,7 +62,7 @@ public class RepositoryTest {
     @Test
     public void testDeleteLock() {
         String lockName = "test-lock";
-        OmsLockDO lockDO = new OmsLockDO(lockName, NetUtils.getLocalHost(), 10000L);
+        OmsLockDO lockDO = new OmsLockDO(lockName, NetUtils.getLocalHost4Test(), 10000L);
         omsLockRepository.save(lockDO);
         omsLockRepository.deleteByLockName(lockName);
     }
@@ -94,7 +94,7 @@ public class RepositoryTest {
     public void testCheckQuery() {
         Date time = new Date();
         System.out.println(time);
-        final List<InstanceInfoDO> res = instanceInfoRepository.findByAppIdInAndStatusAndGmtModifiedBefore(Lists.newArrayList(1L), 3, time);
+        final List<BriefInstanceInfo> res = instanceInfoRepository.selectBriefInfoByAppIdInAndStatusAndGmtModifiedBefore(Lists.newArrayList(1L), 3, time, PageRequest.of(0, 100));
         System.out.println(res);
     }
 

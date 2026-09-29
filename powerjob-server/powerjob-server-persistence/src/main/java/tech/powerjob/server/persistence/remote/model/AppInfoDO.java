@@ -14,7 +14,7 @@ import java.util.Date;
  */
 @Data
 @Entity
-@Table(uniqueConstraints = {@UniqueConstraint(name = "appNameUK", columnNames = {"appName"})})
+@Table(uniqueConstraints = {@UniqueConstraint(name = "uidx01_app_info", columnNames = {"appName"})})
 public class AppInfoDO {
 
     @Id
@@ -22,7 +22,14 @@ public class AppInfoDO {
     @GenericGenerator(name = "native", strategy = "native")
     private Long id;
 
+
     private String appName;
+
+    /**
+     * 描述
+     */
+    private String title;
+
     /**
      * 应用分组密码
      */
@@ -35,7 +42,24 @@ public class AppInfoDO {
      */
     private String currentServer;
 
+    /**
+     * 命名空间ID，外键关联
+     */
+    private Long namespaceId;
+    /**
+     * 管理标签
+     */
+    private String tags;
+    /**
+     * 扩展字段
+     */
+    private String extra;
+
     private Date gmtCreate;
 
     private Date gmtModified;
+
+    private Long creator;
+
+    private Long modifier;
 }

@@ -1,20 +1,23 @@
 package tech.powerjob.server.web.response;
 
 import com.alibaba.fastjson.JSON;
+import com.alibaba.fastjson.JSONObject;
+import org.apache.commons.lang3.StringUtils;
 import tech.powerjob.common.enums.ExecuteType;
 import tech.powerjob.common.enums.ProcessorType;
 import tech.powerjob.common.enums.TimeExpressionType;
 import tech.powerjob.common.model.AlarmConfig;
+import tech.powerjob.common.model.JobAdvancedRuntimeConfig;
+import tech.powerjob.common.model.LogConfig;
 import tech.powerjob.common.model.LifeCycle;
 import tech.powerjob.common.utils.CommonUtils;
 import tech.powerjob.server.common.SJ;
 import tech.powerjob.common.enums.DispatchStrategy;
-import tech.powerjob.server.common.constants.SwitchableStatus;
+import tech.powerjob.common.enums.SwitchableStatus;
 import tech.powerjob.server.persistence.remote.model.JobInfoDO;
 import com.google.common.collect.Lists;
 import lombok.Data;
 import org.springframework.beans.BeanUtils;
-import org.springframework.util.StringUtils;
 
 import java.util.Date;
 import java.util.List;
@@ -140,9 +143,26 @@ public class JobInfoVO {
 
     private String dispatchStrategy;
 
+    /**
+     * 某种派发策略背后的具体配置，值取决于 dispatchStrategy
+     */
+    private String dispatchStrategyConfig;
+
     private LifeCycle lifeCycle;
 
     private AlarmConfig alarmConfig;
+
+    /**
+     * 任务归类，开放给接入方自由定制
+     */
+    private String tag;
+
+    /**
+     * 日志配置，包括日志级别、日志方式等配置信息
+     */
+    private LogConfig logConfig;
+
+    private JobAdvancedRuntimeConfig advancedRuntimeConfig;
 
     public static JobInfoVO from(JobInfoDO jobInfoDO) {
         JobInfoVO jobInfoVO = new JobInfoVO();
@@ -168,9 +188,24 @@ public class JobInfoVO {
 
         if (!StringUtils.isEmpty(jobInfoDO.getAlarmConfig())){
             jobInfoVO.setAlarmConfig(JSON.parseObject(jobInfoDO.getAlarmConfig(),AlarmConfig.class));
+        } else {
+            jobInfoVO.setAlarmConfig(new AlarmConfig());
         }
         if (!StringUtils.isEmpty(jobInfoDO.getLifecycle())){
             jobInfoVO.setLifeCycle(LifeCycle.parse(jobInfoDO.getLifecycle()));
+        }
+
+        if (!StringUtils.isEmpty(jobInfoDO.getLogConfig())) {
+            jobInfoVO.setLogConfig(JSONObject.parseObject(jobInfoDO.getLogConfig(), LogConfig.class));
+        } else {
+            // 不存在 job 配置时防止前端报错
+            jobInfoVO.setLogConfig(new LogConfig());
+        }
+
+        if (StringUtils.isEmpty(jobInfoDO.getAdvancedRuntimeConfig())) {
+            jobInfoVO.setAdvancedRuntimeConfig(new JobAdvancedRuntimeConfig());
+        } else {
+            jobInfoVO.setAdvancedRuntimeConfig(JSONObject.parseObject(jobInfoDO.getAdvancedRuntimeConfig(), JobAdvancedRuntimeConfig.class));
         }
 
         return jobInfoVO;

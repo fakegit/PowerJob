@@ -35,7 +35,7 @@ public class ContainerDeployServerEndpoint {
         try {
             containerService.deploy(id, session);
         }catch (Exception e) {
-            log.error("[ContainerDeployServerEndpoint] deploy container {} failed.", id, e);
+            log.error("[ContainerDeployServerEndpoint] deploy container {} failed ({}).", id, e.getClass().getSimpleName());
 
             remote.sendText("SYSTEM: deploy failed because of the exception");
             remote.sendText(ExceptionUtils.getStackTrace(e));
@@ -43,8 +43,15 @@ public class ContainerDeployServerEndpoint {
         try {
             session.close();
         }catch (Exception e) {
-            log.error("[ContainerDeployServerEndpoint] close session for {} failed.", id, e);
+            log.error("[ContainerDeployServerEndpoint] close session for {} failed ({}).", id, e.getClass().getSimpleName());
         }
+    }
+
+    @OnMessage
+    public void onMessage(String message, Session session) {
+        // Old consoles send a greeting; newer consoles send an authentication frame.
+        // Deployment starts on open, so neither frame may trigger it a second time.
+        log.debug("[ContainerDeployServerEndpoint] received client frame for session {}", session.getId());
     }
 
     @OnError
@@ -52,8 +59,8 @@ public class ContainerDeployServerEndpoint {
         try {
             session.close();
         } catch (IOException e) {
-            log.error("[ContainerDeployServerEndpoint] close session failed.", e);
+            log.error("[ContainerDeployServerEndpoint] close session failed ({}).", e.getClass().getSimpleName());
         }
-        log.warn("[ContainerDeployServerEndpoint] session onError!", throwable);
+        log.warn("[ContainerDeployServerEndpoint] session onError ({})", throwable.getClass().getSimpleName());
     }
 }

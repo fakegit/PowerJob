@@ -1,30 +1,34 @@
 package tech.powerjob.server.core.instance;
 
+import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.apache.commons.lang3.StringUtils;
 import org.springframework.beans.BeanUtils;
 import org.springframework.stereotype.Service;
-import org.springframework.util.StringUtils;
 import tech.powerjob.common.enums.InstanceStatus;
-import tech.powerjob.common.enums.Protocol;
 import tech.powerjob.common.enums.TimeExpressionType;
 import tech.powerjob.common.model.LifeCycle;
 import tech.powerjob.common.request.ServerStopInstanceReq;
 import tech.powerjob.common.request.TaskTrackerReportInstanceStatusReq;
+import tech.powerjob.common.utils.CommonUtils;
+import tech.powerjob.remote.framework.base.URL;
 import tech.powerjob.server.common.module.WorkerInfo;
 import tech.powerjob.server.common.timewheel.holder.HashedWheelTimerHolder;
 import tech.powerjob.server.common.utils.SpringUtils;
+import tech.powerjob.server.core.alarm.AlarmUtils;
 import tech.powerjob.server.core.service.UserService;
 import tech.powerjob.server.core.workflow.WorkflowInstanceManager;
-import tech.powerjob.server.extension.defaultimpl.alarm.AlarmCenter;
-import tech.powerjob.server.extension.defaultimpl.alarm.module.JobInstanceAlarm;
+import tech.powerjob.server.core.alarm.AlarmCenter;
+import tech.powerjob.server.core.alarm.module.JobInstanceAlarm;
 import tech.powerjob.server.persistence.remote.model.InstanceInfoDO;
 import tech.powerjob.server.persistence.remote.model.JobInfoDO;
 import tech.powerjob.server.persistence.remote.model.UserInfoDO;
 import tech.powerjob.server.persistence.remote.repository.InstanceInfoRepository;
-import tech.powerjob.server.remote.transport.TransportService;
+import tech.powerjob.server.remote.aware.TransportServiceAware;
+import tech.powerjob.server.remote.transporter.impl.ServerURLFactory;
+import tech.powerjob.server.remote.transporter.TransportService;
 import tech.powerjob.server.remote.worker.WorkerClusterQueryService;
 
-import javax.annotation.Resource;
 import java.util.Date;
 import java.util.List;
 import java.util.Optional;
@@ -39,22 +43,25 @@ import java.util.concurrent.TimeUnit;
  */
 @Slf4j
 @Service
-public class InstanceManager {
+@RequiredArgsConstructor
+public class InstanceManager implements TransportServiceAware {
 
-    @Resource
-    private AlarmCenter alarmCenter;
-    @Resource
-    private InstanceLogService instanceLogService;
-    @Resource
-    private InstanceMetadataService instanceMetadataService;
-    @Resource
-    private InstanceInfoRepository instanceInfoRepository;
-    @Resource
-    private WorkflowInstanceManager workflowInstanceManager;
-    @Resource
+    private final AlarmCenter alarmCenter;
+
+    private final InstanceLogService instanceLogService;
+
+    private final InstanceMetadataService instanceMetadataService;
+
+    private final InstanceInfoRepository instanceInfoRepository;
+
+    private final WorkflowInstanceManager workflowInstanceManager;
+
+    private final WorkerClusterQueryService workerClusterQueryService;
+
+    /**
+     * 基础组件通过 aware 注入，避免循环依赖
+     */
     private TransportService transportService;
-    @Resource
-    private WorkerClusterQueryService workerClusterQueryService;
 
     /**
      * 更新任务状态
@@ -69,7 +76,6 @@ public class InstanceManager {
     public void updateStatus(TaskTrackerReportInstanceStatusReq req) throws ExecutionException {
 
         Long instanceId = req.getInstanceId();
-
         // 获取相关数据
         JobInfoDO jobInfo = instanceMetadataService.fetchJobInfoByInstanceId(req.getInstanceId());
         InstanceInfoDO instanceInfo = instanceInfoRepository.findByInstanceId(instanceId);
@@ -77,6 +83,15 @@ public class InstanceManager {
             log.warn("[InstanceManager-{}] can't find InstanceInfo from database", instanceId);
             return;
         }
+
+        // 考虑极端情况：Processor 处理耗时小于 server 写 DB 耗时，会导致状态上报时无 taskTracker 地址，此处等待后重新从DB获取数据 GitHub#620
+        if (StringUtils.isEmpty(instanceInfo.getTaskTrackerAddress())) {
+            log.warn("[InstanceManager-{}] TaskTrackerAddress is empty, server will wait then acquire again!", instanceId);
+            CommonUtils.easySleep(277);
+            instanceInfo = instanceInfoRepository.findByInstanceId(instanceId);
+        }
+
+        int originStatus = instanceInfo.getStatus();
         // 丢弃过期的上报数据
         if (req.getReportTime() <= instanceInfo.getLastReportTime()) {
             log.warn("[InstanceManager-{}] receive the expired status report request: {}, this report will be dropped.", instanceId, req);
@@ -134,8 +149,7 @@ public class InstanceManager {
         boolean finished = false;
         if (receivedInstanceStatus == InstanceStatus.SUCCEED) {
             instanceInfo.setResult(req.getResult());
-            instanceInfo.setFinishedTime(System.currentTimeMillis());
-
+            instanceInfo.setFinishedTime(req.getEndTime() == null ? System.currentTimeMillis() : req.getEndTime());
             finished = true;
         } else if (receivedInstanceStatus == InstanceStatus.FAILED) {
 
@@ -152,21 +166,23 @@ public class InstanceManager {
                 instanceInfo.setStatus(InstanceStatus.WAITING_DISPATCH.getV());
             } else {
                 instanceInfo.setResult(req.getResult());
-                instanceInfo.setFinishedTime(System.currentTimeMillis());
+                instanceInfo.setFinishedTime(req.getEndTime() == null ? System.currentTimeMillis() : req.getEndTime());
                 finished = true;
                 log.info("[InstanceManager-{}] instance execute failed and have no chance to retry.", instanceId);
             }
         }
-
-        // 同步状态变更信息到数据库
-        instanceInfoRepository.saveAndFlush(instanceInfo);
-
         if (finished) {
+            // 最终状态允许直接覆盖更新
+            instanceInfoRepository.saveAndFlush(instanceInfo);
             // 这里的 InstanceStatus 只有 成功/失败 两种，手动停止不会由 TaskTracker 上报
             processFinishedInstance(instanceId, req.getWfInstanceId(), receivedInstanceStatus, req.getResult());
-
+            return;
         }
-
+        // 带条件更新
+        final int i = instanceInfoRepository.updateStatusChangeInfoByInstanceIdAndStatus(instanceInfo.getLastReportTime(), instanceInfo.getGmtModified(), instanceInfo.getRunningTimes(), instanceInfo.getStatus(), instanceInfo.getInstanceId(), originStatus);
+        if (i == 0) {
+            log.warn("[InstanceManager-{}] update instance status failed, maybe the instance status has been changed by other thread. discard this status change,{}", instanceId, instanceInfo);
+        }
     }
 
     private void stopInstance(Long instanceId, InstanceInfoDO instanceInfo) {
@@ -174,7 +190,8 @@ public class InstanceManager {
         if (workerInfoOpt.isPresent()) {
             ServerStopInstanceReq stopInstanceReq = new ServerStopInstanceReq(instanceId);
             WorkerInfo workerInfo = workerInfoOpt.get();
-            transportService.tell(Protocol.of(workerInfo.getProtocol()), workerInfo.getAddress(), stopInstanceReq);
+            final URL url = ServerURLFactory.stopInstance2Worker(workerInfo.getAddress());
+            transportService.tell(workerInfo.getProtocol(), url, stopInstanceReq);
         }
     }
 
@@ -191,7 +208,7 @@ public class InstanceManager {
         log.info("[Instance-{}] process finished, final status is {}.", instanceId, status.name());
 
         // 上报日志数据
-        HashedWheelTimerHolder.INACCURATE_TIMER.schedule(() -> instanceLogService.sync(instanceId), 15, TimeUnit.SECONDS);
+        HashedWheelTimerHolder.INACCURATE_TIMER.schedule(() -> instanceLogService.sync(instanceId), 60, TimeUnit.SECONDS);
 
         // workflow 特殊处理
         if (wfInstanceId != null) {
@@ -223,7 +240,11 @@ public class InstanceManager {
         if (!StringUtils.isEmpty(alertContent)) {
             content.setResult(alertContent);
         }
-        alarmCenter.alarmFailed(content, userList);
+        alarmCenter.alarmFailed(content, AlarmUtils.convertUserInfoList2AlarmTargetList(userList));
     }
 
+    @Override
+    public void setTransportService(TransportService transportService) {
+        this.transportService = transportService;
+    }
 }

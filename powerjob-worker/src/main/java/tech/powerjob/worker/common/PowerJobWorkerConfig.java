@@ -1,13 +1,15 @@
 package tech.powerjob.worker.common;
 
+import com.google.common.collect.Lists;
+import lombok.Getter;
+import lombok.Setter;
 import tech.powerjob.common.RemoteConstant;
+import tech.powerjob.common.enums.Protocol;
 import tech.powerjob.worker.common.constants.StoreStrategy;
 import tech.powerjob.worker.core.processor.ProcessResult;
 import tech.powerjob.worker.core.processor.WorkflowContext;
 import tech.powerjob.worker.extension.SystemMetricsCollector;
-import com.google.common.collect.Lists;
-import lombok.Getter;
-import lombok.Setter;
+import tech.powerjob.worker.extension.processor.ProcessorFactory;
 
 import java.util.List;
 
@@ -36,6 +38,10 @@ public class PowerJobWorkerConfig {
      */
     private List<String> serverAddress = Lists.newArrayList();
     /**
+     * Protocol for communication between WORKER and server
+     */
+    private Protocol protocol = Protocol.AKKA;
+    /**
      * Max length of response result. Result that is longer than the value will be truncated.
      * {@link ProcessResult} max length for #msg
      */
@@ -51,19 +57,36 @@ public class PowerJobWorkerConfig {
      */
     private StoreStrategy storeStrategy = StoreStrategy.DISK;
     /**
-     * If test mode is set as true, Powerjob-worker no longer connects to the server or validates appName.
-     * Test mode is used for conditions that your have no powerjob-server in your develop env so you can't startup the application
+     * If allowLazyConnectServer is set as true, PowerJob worker allows launching without a direct connection to the server.
+     * allowLazyConnectServer is used for conditions that your have no powerjob-server in your develop env so you can't startup the application
      */
-    private boolean enableTestMode = false;
+    private boolean allowLazyConnectServer = false;
     /**
      * Max length of appended workflow context value length. Appended workflow context value that is longer than the value will be ignore.
      * {@link WorkflowContext} max length for #appendedContextData
      */
     private int maxAppendedWfContextLength = 8192;
-
-
+    /**
+     * user-customized system metrics collector
+     */
     private SystemMetricsCollector systemMetricsCollector;
+    /**
+     * Processor factory for custom logic, generally used for IOC framework processor bean injection that is not officially supported by PowerJob
+     */
+    private List<ProcessorFactory> processorFactoryList;
 
     private String tag;
+    /**
+     * Max numbers of LightTaskTacker
+     */
+    private Integer maxLightweightTaskNum = 1024;
+    /**
+     * Max numbers of HeavyTaskTacker
+     */
+    private Integer maxHeavyweightTaskNum = 64;
+    /**
+     * Interval(s) of worker health report
+     */
+    private Integer healthReportInterval = 10;
 
 }

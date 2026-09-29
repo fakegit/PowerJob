@@ -1,5 +1,7 @@
 package tech.powerjob.official.processors.impl.script;
 
+import tech.powerjob.common.utils.SysUtils;
+import tech.powerjob.worker.common.utils.PowerFileUtils;
 import tech.powerjob.worker.core.processor.ProcessResult;
 import tech.powerjob.worker.core.processor.TaskContext;
 import tech.powerjob.worker.log.OmsLogger;
@@ -13,9 +15,12 @@ import tech.powerjob.official.processors.util.CommonUtils;
 
 import java.io.*;
 import java.net.URL;
+import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
 import java.util.Set;
 import java.util.concurrent.ForkJoinPool;
+import java.util.concurrent.ForkJoinTask;
 
 /**
  * 脚本处理器
@@ -27,11 +32,12 @@ import java.util.concurrent.ForkJoinPool;
 @Slf4j
 public abstract class AbstractScriptProcessor extends CommonBasicProcessor {
 
-    private static final ForkJoinPool POOL = new ForkJoinPool(4 * Runtime.getRuntime().availableProcessors());
+    private static final ForkJoinPool POOL = new ForkJoinPool(4 * SysUtils.availableProcessors());
     private static final Set<String> DOWNLOAD_PROTOCOL = Sets.newHashSet("http", "https", "ftp");
     protected static final String SH_SHELL = "/bin/sh";
+    protected static final String CMD_SHELL = "cmd.exe";
 
-    private static final String WORKER_DIR = System.getProperty("user.home") + "/powerjob/worker/official_script_processor/";
+    private static final String WORKER_DIR = PowerFileUtils.workspace() + "/official_script_processor/";
 
     @Override
     protected ProcessResult process0(TaskContext context) throws Exception {
@@ -55,13 +61,16 @@ public abstract class AbstractScriptProcessor extends CommonBasicProcessor {
         }
 
         // 授权
-        ProcessBuilder chmodPb = new ProcessBuilder("/bin/chmod", "755", scriptPath);
-        // 等待返回，这里不可能导致死锁（shell产生大量数据可能导致死锁）
-        chmodPb.start().waitFor();
-        omsLogger.info("[SYSTEM] chmod 755 authorization complete, ready to start execution~");
-
+        if  ( !SystemUtils.IS_OS_WINDOWS) {
+            ProcessBuilder chmodPb = new ProcessBuilder("/bin/chmod", "755", scriptPath);
+            // 等待返回，这里不可能导致死锁（shell产生大量数据可能导致死锁）
+            chmodPb.start().waitFor();
+            omsLogger.info("[SYSTEM] chmod 755 authorization complete, ready to start execution~");
+        }
         // 2. 执行目标脚本
-        ProcessBuilder pb = new ProcessBuilder(getRunCommand(), scriptPath);
+        ProcessBuilder pb = StringUtils.equals(getRunCommand(), CMD_SHELL) ?
+                new ProcessBuilder(getRunCommand(), "/c", scriptPath)
+                : new ProcessBuilder(getRunCommand(), scriptPath);
         Process process = pb.start();
 
         StringBuilder inputBuilder = new StringBuilder();
@@ -70,17 +79,24 @@ public abstract class AbstractScriptProcessor extends CommonBasicProcessor {
         boolean success = true;
         String result;
 
-        try (InputStream is = process.getInputStream(); InputStream es = process.getErrorStream()) {
+        final Charset charset = getCharset();
+        try {
+            InputStream is = process.getInputStream();
+            InputStream es = process.getErrorStream();
 
-            POOL.execute(() -> copyStream(is, inputBuilder, omsLogger));
-            POOL.execute(() -> copyStream(es, errorBuilder, omsLogger));
+            ForkJoinTask<?> inputSubmit = POOL.submit(() -> copyStream(is, inputBuilder, omsLogger, charset));
+            ForkJoinTask<?> errorSubmit = POOL.submit(() -> copyStream(es, errorBuilder, omsLogger, charset));
 
             success = process.waitFor() == 0;
+
+            // 阻塞等待日志读取
+            inputSubmit.get();
+            errorSubmit.get();
 
         } catch (InterruptedException ie) {
             omsLogger.info("[SYSTEM] ScriptProcessor has been interrupted");
         } finally {
-            result = String.format("[INPUT]: %s;[ERROR]: %s", inputBuilder.toString(), errorBuilder.toString());
+            result = String.format("[INPUT]: %s;[ERROR]: %s", inputBuilder, errorBuilder);
         }
         return new ProcessResult(success, result);
     }
@@ -106,19 +122,29 @@ public abstract class AbstractScriptProcessor extends CommonBasicProcessor {
             }
         }
 
-        // 非下载链接，为 processInfo 生成可执行文件
-        try (FileWriter fw = new FileWriter(script); BufferedWriter bw = new BufferedWriter(fw)) {
-            bw.write(processorInfo);
-            bw.flush();
+        final Charset charset = getCharset();
+
+        if(charset != null)
+        {
+            try (Writer fstream = new OutputStreamWriter(Files.newOutputStream(script.toPath()), charset); BufferedWriter out = new BufferedWriter(fstream)) {
+                out.write(processorInfo);
+                out.flush();
+            }
+        }
+        else {
+            try (FileWriter fw = new FileWriter(script); BufferedWriter bw = new BufferedWriter(fw)) {
+                bw.write(processorInfo);
+                bw.flush();
+            }
         }
         return scriptPath;
     }
 
-    private static void copyStream(InputStream is, StringBuilder sb, OmsLogger omsLogger) {
+    private void copyStream(InputStream is, StringBuilder sb, OmsLogger omsLogger, Charset charset) {
         String line;
-        try (BufferedReader br = new BufferedReader(new InputStreamReader(is, StandardCharsets.UTF_8))) {
+        try (BufferedReader br = new BufferedReader(new InputStreamReader(is, charset))) {
             while ((line = br.readLine()) != null) {
-                sb.append(line);
+                sb.append(line).append(System.lineSeparator());
                 // 同步到在线日志
                 omsLogger.info(line);
             }
@@ -127,6 +153,13 @@ public abstract class AbstractScriptProcessor extends CommonBasicProcessor {
             omsLogger.warn("[SYSTEM] copyStream failed.", e);
 
             sb.append("Exception: ").append(e);
+        } finally {
+            try {
+                is.close();
+            } catch (IOException e) {
+                log.warn("[ScriptProcessor] close stream failed.", e);
+                omsLogger.warn("[SYSTEM] close stream failed.", e);
+            }
         }
     }
 
@@ -142,4 +175,12 @@ public abstract class AbstractScriptProcessor extends CommonBasicProcessor {
      * @return 执行脚本的命令
      */
     protected abstract String getRunCommand();
+
+    /**
+     * 默认不指定
+     * @return Charset
+     */
+    protected Charset getCharset() {
+        return StandardCharsets.UTF_8;
+    }
 }

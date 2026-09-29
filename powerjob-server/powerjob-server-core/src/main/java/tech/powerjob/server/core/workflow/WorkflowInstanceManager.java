@@ -4,6 +4,7 @@ import com.alibaba.fastjson.JSON;
 import com.alibaba.fastjson.TypeReference;
 import com.google.common.collect.Maps;
 import com.google.common.collect.Sets;
+import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.commons.lang3.StringUtils;
 import org.springframework.beans.BeanUtils;
@@ -17,22 +18,23 @@ import tech.powerjob.common.exception.PowerJobException;
 import tech.powerjob.common.model.PEWorkflowDAG;
 import tech.powerjob.common.serialize.JsonUtils;
 import tech.powerjob.common.utils.CommonUtils;
-import tech.powerjob.server.common.constants.SwitchableStatus;
+import tech.powerjob.common.enums.SwitchableStatus;
+import tech.powerjob.server.common.utils.SpringUtils;
+import tech.powerjob.server.core.alarm.AlarmUtils;
 import tech.powerjob.server.core.helper.StatusMappingHelper;
 import tech.powerjob.server.core.lock.UseCacheLock;
 import tech.powerjob.server.core.service.UserService;
 import tech.powerjob.server.core.service.WorkflowNodeHandleService;
 import tech.powerjob.server.core.uid.IdGenerateService;
 import tech.powerjob.server.core.workflow.algorithm.WorkflowDAGUtils;
-import tech.powerjob.server.extension.defaultimpl.alarm.AlarmCenter;
-import tech.powerjob.server.extension.defaultimpl.alarm.module.WorkflowInstanceAlarm;
+import tech.powerjob.server.core.alarm.AlarmCenter;
+import tech.powerjob.server.core.alarm.module.WorkflowInstanceAlarm;
 import tech.powerjob.server.persistence.remote.model.*;
 import tech.powerjob.server.persistence.remote.repository.JobInfoRepository;
 import tech.powerjob.server.persistence.remote.repository.WorkflowInfoRepository;
 import tech.powerjob.server.persistence.remote.repository.WorkflowInstanceInfoRepository;
 import tech.powerjob.server.persistence.remote.repository.WorkflowNodeInfoRepository;
 
-import javax.annotation.Resource;
 import java.util.*;
 import java.util.stream.Collectors;
 
@@ -47,25 +49,25 @@ import static tech.powerjob.server.core.workflow.algorithm.WorkflowDAGUtils.isNo
  */
 @Slf4j
 @Service
+@RequiredArgsConstructor
 @SuppressWarnings("squid:S1192")
 public class WorkflowInstanceManager {
 
-    @Resource
-    private AlarmCenter alarmCenter;
-    @Resource
-    private IdGenerateService idGenerateService;
-    @Resource
-    private JobInfoRepository jobInfoRepository;
-    @Resource
-    private UserService userService;
-    @Resource
-    private WorkflowInfoRepository workflowInfoRepository;
-    @Resource
-    private WorkflowInstanceInfoRepository workflowInstanceInfoRepository;
-    @Resource
-    private WorkflowNodeInfoRepository workflowNodeInfoRepository;
-    @Resource
-    private WorkflowNodeHandleService workflowNodeHandleService;
+    private final AlarmCenter alarmCenter;
+
+    private final IdGenerateService idGenerateService;
+
+    private final JobInfoRepository jobInfoRepository;
+
+    private final UserService userService;
+
+    private final WorkflowInfoRepository workflowInfoRepository;
+
+    private final WorkflowInstanceInfoRepository workflowInstanceInfoRepository;
+
+    private final WorkflowNodeInfoRepository workflowNodeInfoRepository;
+
+    private final WorkflowNodeHandleService workflowNodeHandleService;
 
     /**
      * 创建工作流任务实例
@@ -440,10 +442,10 @@ public class WorkflowInstanceManager {
             if (workflowInstanceStatus == WorkflowInstanceStatus.SUCCEED){
                 HashMap<String, String> wfContext = JSON.parseObject(wfInstance.getWfContext(), new TypeReference<HashMap<String, String>>() {
                 });
-                updateWorkflowContext(wfInstance.getParentWfInstanceId(),wfContext);
+                SpringUtils.getBean(this.getClass()).updateWorkflowContext(wfInstance.getParentWfInstanceId(), wfContext);
             }
-            // 处理父工作流
-            move(wfInstance.getParentWfInstanceId(), wfInstance.getWfInstanceId(), StatusMappingHelper.toInstanceStatus(workflowInstanceStatus), result);
+            // 处理父工作流, fix https://github.com/PowerJob/PowerJob/issues/465
+            SpringUtils.getBean(this.getClass()).move(wfInstance.getParentWfInstanceId(), wfInstance.getWfInstanceId(), StatusMappingHelper.toInstanceStatus(workflowInstanceStatus), result);
         }
 
         // 报警
@@ -457,7 +459,7 @@ public class WorkflowInstanceManager {
                     content.setResult(result);
 
                     List<UserInfoDO> userList = userService.fetchNotifyUserList(wfInfo.getNotifyUserIds());
-                    alarmCenter.alarmFailed(content, userList);
+                    alarmCenter.alarmFailed(content, AlarmUtils.convertUserInfoList2AlarmTargetList(userList));
                 });
             } catch (Exception ignore) {
                 // ignore

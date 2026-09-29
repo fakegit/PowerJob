@@ -19,7 +19,12 @@ import java.util.Date;
 @Entity
 @NoArgsConstructor
 @AllArgsConstructor
-@Table(indexes = {@Index(columnList = "jobId"), @Index(columnList = "appId"), @Index(columnList = "instanceId")})
+@Table(indexes = {
+        @Index(name = "idx01_instance_info", columnList = "jobId,status"),
+        @Index(name = "idx02_instance_info", columnList = "appId,status"),
+        @Index(name = "idx03_instance_info", columnList = "instanceId,status"),
+        @Index(name = "idx04_instance_info_outer_key", columnList = "outerKey")
+})
 public class InstanceInfoDO {
 
     @Id
@@ -40,6 +45,7 @@ public class InstanceInfoDO {
     private Long instanceId;
     /**
      * 任务参数（静态）
+     *
      * @since 2021/2/01
      */
     @Lob
@@ -94,6 +100,19 @@ public class InstanceInfoDO {
      */
     private Long runningTimes;
 
+    /**
+     * “外键”，用于 OPENAPI 场景业务场景与 PowerJob 实例的绑定
+     */
+    private String outerKey;
+    /**
+     * 扩展属性，用于 OPENAPI 场景上下文参数的透传
+     */
+    private String extendValue;
+
+    /**
+     * 调度元信息
+     */
+    private String meta;
 
     private Date gmtCreate;
 

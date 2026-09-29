@@ -7,7 +7,7 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.BeanUtils;
 import org.springframework.stereotype.Service;
 import org.springframework.util.CollectionUtils;
-import org.springframework.util.StringUtils;
+import org.apache.commons.lang3.StringUtils;
 import tech.powerjob.common.enums.TimeExpressionType;
 import tech.powerjob.common.exception.PowerJobException;
 import tech.powerjob.common.model.LifeCycle;
@@ -15,7 +15,7 @@ import tech.powerjob.common.model.PEWorkflowDAG;
 import tech.powerjob.common.request.http.SaveWorkflowNodeRequest;
 import tech.powerjob.common.request.http.SaveWorkflowRequest;
 import tech.powerjob.server.common.SJ;
-import tech.powerjob.server.common.constants.SwitchableStatus;
+import tech.powerjob.common.enums.SwitchableStatus;
 import tech.powerjob.server.common.timewheel.holder.InstanceTimeWheelService;
 import tech.powerjob.server.core.scheduler.TimingStrategyService;
 import tech.powerjob.server.core.service.NodeValidateService;
@@ -75,6 +75,7 @@ public class WorkflowService {
         } else {
             Long finalWfId = wfId;
             wf = workflowInfoRepository.findById(wfId).orElseThrow(() -> new IllegalArgumentException("can't find workflow by id:" + finalWfId));
+            requireNotDeleted(wf);
         }
 
         BeanUtils.copyProperties(req, wf);
@@ -239,6 +240,7 @@ public class WorkflowService {
      */
     public void disableWorkflow(Long wfId, Long appId) {
         WorkflowInfoDO wfInfo = permissionCheck(wfId, appId);
+        requireNotDeleted(wfInfo);
         wfInfo.setStatus(SwitchableStatus.DISABLE.getV());
         wfInfo.setGmtModified(new Date());
         workflowInfoRepository.saveAndFlush(wfInfo);
@@ -252,6 +254,7 @@ public class WorkflowService {
      */
     public void enableWorkflow(Long wfId, Long appId) {
         WorkflowInfoDO wfInfo = permissionCheck(wfId, appId);
+        requireNotDeleted(wfInfo);
         wfInfo.setStatus(SwitchableStatus.ENABLE.getV());
         wfInfo.setGmtModified(new Date());
         workflowInfoRepository.saveAndFlush(wfInfo);
@@ -271,6 +274,7 @@ public class WorkflowService {
 
         delay = delay == null ? 0 : delay;
         WorkflowInfoDO wfInfo = permissionCheck(wfId, appId);
+        requireNotDeleted(wfInfo);
 
         log.info("[WorkflowService-{}] try to run workflow, initParams={},delay={} ms.", wfInfo.getId(), initParams, delay);
         Long wfInstanceId = workflowInstanceManager.create(wfInfo, initParams, System.currentTimeMillis() + delay, null);
@@ -354,6 +358,12 @@ public class WorkflowService {
         wfInfo.setPeDAG(JSON.toJSONString(dagInfo));
     }
 
+
+    private void requireNotDeleted(WorkflowInfoDO workflow) {
+        if (Integer.valueOf(SwitchableStatus.DELETED.getV()).equals(workflow.getStatus())) {
+            throw new PowerJobException("Cannot modify or run a deleted workflow");
+        }
+    }
 
     private WorkflowInfoDO permissionCheck(Long wfId, Long appId) {
         WorkflowInfoDO wfInfo = workflowInfoRepository.findById(wfId).orElseThrow(() -> new IllegalArgumentException("can't find workflow by id: " + wfId));

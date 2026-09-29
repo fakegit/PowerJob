@@ -19,6 +19,7 @@ public class InstanceInfo implements Serializable {
     private Long jobId;
     private Long instanceId;
     private Long wfInstanceId;
+    private Long expectTriggerTime;
 
     /**
      * 任务执行处理器信息
@@ -51,4 +52,13 @@ public class InstanceInfo implements Serializable {
     private int threadConcurrency;
     // 子任务重试次数（任务本身的重试机制由server控制）
     private int taskRetryNum;
+
+    private String logConfig;
+
+    private String advancedRuntimeConfig;
+
+    /**
+     * 调度元信息
+     */
+    private String meta;
 }

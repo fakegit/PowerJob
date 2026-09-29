@@ -1,8 +1,8 @@
 package tech.powerjob.common.model;
 
-import tech.powerjob.common.PowerSerializable;
 import lombok.Data;
 import lombok.NoArgsConstructor;
+import tech.powerjob.common.PowerSerializable;
 
 import java.util.List;
 
@@ -50,9 +50,25 @@ public class InstanceDetail implements PowerSerializable {
     private String instanceParams;
 
     /**
+     * “外键”，用于 OPENAPI 场景业务场景与 PowerJob 实例的绑定
+     */
+    private String outerKey;
+    /**
+     * 扩展属性，用于 OPENAPI 场景上下文参数的透传
+     */
+    private String extendValue;
+
+    /**
      * Task detail, used by MapReduce or Broadcast tasks.
+     * 命名有点问题，实际是 task 统计信息
      */
     private TaskDetail taskDetail;
+
+    /**
+     * 查询出来的 Task 详细结果
+     */
+    private List<TaskDetailInfo> queriedTaskDetailInfoList;
+
     /**
      * Sub instance details, used by frequent tasks.
      */
@@ -92,5 +108,14 @@ public class InstanceDetail implements PowerSerializable {
         private long totalTaskNum;
         private long succeedTaskNum;
         private long failedTaskNum;
+
+        // 等待派发状态（仅存在 TaskTracker 数据库中）
+        protected Long waitingDispatchTaskNum;
+        // 已派发，但 ProcessorTracker 未确认，可能由于网络错误请求未送达，也有可能 ProcessorTracker 线程池满，拒绝执行
+        protected Long workerUnreceivedTaskNum;
+        // ProcessorTracker确认接收，存在与线程池队列中，排队执行
+        protected Long receivedTaskNum;
+        // ProcessorTracker正在执行
+        protected Long runningTaskNum;
     }
 }

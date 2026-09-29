@@ -2,6 +2,7 @@ package tech.powerjob.server.common.utils;
 
 import lombok.extern.slf4j.Slf4j;
 import org.apache.commons.lang3.exception.ExceptionUtils;
+import org.aspectj.lang.JoinPoint;
 import org.aspectj.lang.ProceedingJoinPoint;
 import org.aspectj.lang.Signature;
 import org.aspectj.lang.reflect.MethodSignature;
@@ -24,8 +25,12 @@ import java.lang.reflect.Method;
 @Slf4j
 public class AOPUtils {
 
-    private static final ExpressionParser parser = new SpelExpressionParser();
-    private static final ParameterNameDiscoverer discoverer = new LocalVariableTableParameterNameDiscoverer();
+    private static final ExpressionParser PARSER = new SpelExpressionParser();
+    private static final ParameterNameDiscoverer DISCOVERER = new LocalVariableTableParameterNameDiscoverer();
+
+    public static String parseRealClassName(JoinPoint joinPoint) {
+        return joinPoint.getSignature().getDeclaringType().getSimpleName();
+    }
 
     public static Method parseMethod(ProceedingJoinPoint joinPoint) {
         Signature pointSignature = joinPoint.getSignature();
@@ -45,7 +50,7 @@ public class AOPUtils {
     }
 
     public static <T> T parseSpEl(Method method, Object[] arguments, String spEl, Class<T> clazz, T defaultResult) {
-        String[] params = discoverer.getParameterNames(method);
+        String[] params = DISCOVERER.getParameterNames(method);
         assert params != null;
 
         EvaluationContext context = new StandardEvaluationContext();
@@ -53,7 +58,7 @@ public class AOPUtils {
             context.setVariable(params[len], arguments[len]);
         }
         try {
-            Expression expression = parser.parseExpression(spEl);
+            Expression expression = PARSER.parseExpression(spEl);
             return expression.getValue(context, clazz);
         } catch (Exception e) {
             log.error("[AOPUtils] parse SpEL failed for method[{}], please concat @tjq to fix the bug!", method.getName(), e);

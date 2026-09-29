@@ -1,37 +1,33 @@
 package tech.powerjob.server.core.scheduler;
 
+import com.google.common.collect.Lists;
+import com.google.common.collect.Maps;
+import com.google.common.collect.Sets;
+import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.BeanUtils;
+import org.springframework.stereotype.Service;
+import org.springframework.util.CollectionUtils;
 import tech.powerjob.common.enums.InstanceStatus;
 import tech.powerjob.common.enums.TimeExpressionType;
 import tech.powerjob.common.model.LifeCycle;
-import tech.powerjob.server.remote.transport.starter.AkkaStarter;
-import tech.powerjob.server.common.constants.SwitchableStatus;
-import tech.powerjob.server.persistence.remote.model.AppInfoDO;
+import tech.powerjob.common.enums.SwitchableStatus;
+import tech.powerjob.common.request.http.RunJobRequest;
+import tech.powerjob.server.common.timewheel.holder.InstanceTimeWheelService;
+import tech.powerjob.server.core.DispatchService;
+import tech.powerjob.server.core.instance.InstanceService;
+import tech.powerjob.server.core.service.JobService;
+import tech.powerjob.server.core.workflow.WorkflowInstanceManager;
 import tech.powerjob.server.persistence.remote.model.JobInfoDO;
 import tech.powerjob.server.persistence.remote.model.WorkflowInfoDO;
 import tech.powerjob.server.persistence.remote.repository.AppInfoRepository;
 import tech.powerjob.server.persistence.remote.repository.InstanceInfoRepository;
 import tech.powerjob.server.persistence.remote.repository.JobInfoRepository;
 import tech.powerjob.server.persistence.remote.repository.WorkflowInfoRepository;
-import tech.powerjob.server.core.DispatchService;
-import tech.powerjob.server.core.service.JobService;
+import tech.powerjob.server.remote.transporter.TransportService;
 import tech.powerjob.server.remote.worker.WorkerClusterManagerService;
-import tech.powerjob.server.core.instance.InstanceService;
-import tech.powerjob.server.common.timewheel.holder.InstanceTimeWheelService;
-import tech.powerjob.server.core.workflow.WorkflowInstanceManager;
-import com.google.common.base.Stopwatch;
-import com.google.common.collect.Lists;
-import com.google.common.collect.Maps;
-import com.google.common.collect.Sets;
-import lombok.extern.slf4j.Slf4j;
-import org.springframework.beans.BeanUtils;
-import org.springframework.scheduling.annotation.Async;
-import org.springframework.scheduling.annotation.Scheduled;
-import org.springframework.stereotype.Service;
-import org.springframework.util.CollectionUtils;
 
-import javax.annotation.Resource;
 import java.util.*;
-import java.util.stream.Collectors;
 
 /**
  * 任务调度执行服务（调度 CRON 表达式的任务进行执行）
@@ -43,6 +39,7 @@ import java.util.stream.Collectors;
  */
 @Slf4j
 @Service
+@RequiredArgsConstructor
 public class PowerScheduleService {
 
     /**
@@ -50,83 +47,108 @@ public class PowerScheduleService {
      */
     private static final int MAX_APP_NUM = 10;
 
-    @Resource
-    private DispatchService dispatchService;
-    @Resource
-    private InstanceService instanceService;
-    @Resource
-    private WorkflowInstanceManager workflowInstanceManager;
+    private final TransportService transportService;
+    private final DispatchService dispatchService;
 
-    @Resource
-    private AppInfoRepository appInfoRepository;
-    @Resource
-    private JobInfoRepository jobInfoRepository;
-    @Resource
-    private WorkflowInfoRepository workflowInfoRepository;
-    @Resource
-    private InstanceInfoRepository instanceInfoRepository;
+    private final InstanceService instanceService;
 
-    @Resource
-    private JobService jobService;
-    @Resource
-    private TimingStrategyService timingStrategyService;
+    private final WorkflowInstanceManager workflowInstanceManager;
 
-    private static final long SCHEDULE_RATE = 15000;
+    private final AppInfoRepository appInfoRepository;
 
-    @Async("omsTimingPool")
-    @Scheduled(fixedDelay = SCHEDULE_RATE)
-    public void timingSchedule() {
+    private final JobInfoRepository jobInfoRepository;
 
+    private final WorkflowInfoRepository workflowInfoRepository;
+
+    private final InstanceInfoRepository instanceInfoRepository;
+
+    private final JobService jobService;
+
+    private final TimingStrategyService timingStrategyService;
+
+    public static final long SCHEDULE_RATE = 15000;
+
+
+    public void scheduleNormalJob(TimeExpressionType timeExpressionType) {
         long start = System.currentTimeMillis();
-        Stopwatch stopwatch = Stopwatch.createStarted();
-
-        // 先查询DB，查看本机需要负责的任务
-        List<AppInfoDO> allAppInfos = appInfoRepository.findAllByCurrentServer(AkkaStarter.getActorSystemAddress());
-        if (CollectionUtils.isEmpty(allAppInfos)) {
-            log.info("[JobScheduleService] current server has no app's job to schedule.");
-            return;
-        }
-        List<Long> allAppIds = allAppInfos.stream().map(AppInfoDO::getId).collect(Collectors.toList());
-        // 清理不需要维护的数据
-        WorkerClusterManagerService.clean(allAppIds);
-
         // 调度 CRON 表达式 JOB
         try {
-            scheduleCronJob(allAppIds);
+            final List<Long> allAppIds = appInfoRepository.listAppIdByCurrentServer(transportService.defaultProtocol().getAddress());
+            if (CollectionUtils.isEmpty(allAppIds)) {
+                log.info("[NormalScheduler] current server has no app's job to schedule.");
+                return;
+            }
+            scheduleNormalJob0(timeExpressionType, allAppIds);
         } catch (Exception e) {
-            log.error("[CronScheduler] schedule cron job failed.", e);
+            log.error("[NormalScheduler] schedule cron job failed.", e);
         }
-        String cronTime = stopwatch.toString();
-        stopwatch.reset().start();
-
-        // 调度 workflow 任务
-        try {
-            scheduleWorkflow(allAppIds);
-        } catch (Exception e) {
-            log.error("[WorkflowScheduler] schedule workflow job failed.", e);
-        }
-        String wfTime = stopwatch.toString();
-        stopwatch.reset().start();
-
-        // 调度 秒级任务
-        try {
-            scheduleFrequentJob(allAppIds);
-        } catch (Exception e) {
-            log.error("[FrequentScheduler] schedule frequent job failed.", e);
-        }
-
-        log.info("[JobScheduleService] cron schedule: {}, workflow schedule: {}, frequent schedule: {}.", cronTime, wfTime, stopwatch.stop());
-
         long cost = System.currentTimeMillis() - start;
+        log.info("[NormalScheduler] {} job schedule use {} ms.", timeExpressionType, cost);
         if (cost > SCHEDULE_RATE) {
-            log.warn("[JobScheduleService] The database query is using too much time({}ms), please check if the database load is too high!", cost);
+            log.warn("[NormalScheduler] The database query is using too much time({}ms), please check if the database load is too high!", cost);
+        }
+    }
+
+    public void scheduleCronWorkflow() {
+        long start = System.currentTimeMillis();
+        // 调度 CRON 表达式 WORKFLOW
+        try {
+            final List<Long> allAppIds = appInfoRepository.listAppIdByCurrentServer(transportService.defaultProtocol().getAddress());
+            if (CollectionUtils.isEmpty(allAppIds)) {
+                log.info("[CronWorkflowSchedule] current server has no app's workflow to schedule.");
+                return;
+            }
+            scheduleWorkflowCore(allAppIds);
+        } catch (Exception e) {
+            log.error("[CronWorkflowSchedule] schedule cron workflow failed.", e);
+        }
+        long cost = System.currentTimeMillis() - start;
+        log.info("[CronWorkflowSchedule] cron workflow schedule use {} ms.", cost);
+        if (cost > SCHEDULE_RATE) {
+            log.warn("[CronWorkflowSchedule] The database query is using too much time({}ms), please check if the database load is too high!", cost);
+        }
+    }
+
+
+    public void scheduleFrequentJob() {
+        long start = System.currentTimeMillis();
+        // 调度 FIX_RATE/FIX_DELAY 表达式 JOB
+        try {
+            final List<Long> allAppIds = appInfoRepository.listAppIdByCurrentServer(transportService.defaultProtocol().getAddress());
+            if (CollectionUtils.isEmpty(allAppIds)) {
+                log.info("[FrequentJobSchedule] current server has no app's job to schedule.");
+                return;
+            }
+            scheduleFrequentJobCore(allAppIds);
+        } catch (Exception e) {
+            log.error("[FrequentJobSchedule] schedule frequent job failed.", e);
+        }
+        long cost = System.currentTimeMillis() - start;
+        log.info("[FrequentJobSchedule] frequent job schedule use {} ms.", cost);
+        if (cost > SCHEDULE_RATE) {
+            log.warn("[FrequentJobSchedule] The database query is using too much time({}ms), please check if the database load is too high!", cost);
+        }
+    }
+
+
+    public void cleanData() {
+        try {
+            final List<Long> allAppIds = appInfoRepository.listAppIdByCurrentServer(transportService.defaultProtocol().getAddress());
+            if (allAppIds.isEmpty()) {
+                return;
+            }
+            WorkerClusterManagerService.clean(allAppIds);
+        } catch (Exception e) {
+            log.error("[CleanData] clean data failed.", e);
         }
     }
 
     /**
-     * 调度 CRON 表达式类型的任务
+     * 调度普通服务端计算表达式类型（CRON、DAILY_TIME_INTERVAL）的任务
+     * @param timeExpressionType 表达式类型
+     * @param appIds appIds
      */
-    private void scheduleCronJob(List<Long> appIds) {
+    private void scheduleNormalJob0(TimeExpressionType timeExpressionType, List<Long> appIds) {
 
         long nowTime = System.currentTimeMillis();
         long timeThreshold = nowTime + 2 * SCHEDULE_RATE;
@@ -135,7 +157,7 @@ public class PowerScheduleService {
             try {
 
                 // 查询条件：任务开启 + 使用CRON表达调度时间 + 指定appId + 即将需要调度执行
-                List<JobInfoDO> jobInfos = jobInfoRepository.findByAppIdInAndStatusAndTimeExpressionTypeAndNextTriggerTimeLessThanEqual(partAppIds, SwitchableStatus.ENABLE.getV(), TimeExpressionType.CRON.getV(), timeThreshold);
+                List<JobInfoDO> jobInfos = jobInfoRepository.findByAppIdInAndStatusAndTimeExpressionTypeAndNextTriggerTimeLessThanEqual(partAppIds, SwitchableStatus.ENABLE.getV(), timeExpressionType.getV(), timeThreshold);
 
                 if (CollectionUtils.isEmpty(jobInfos)) {
                     return;
@@ -143,10 +165,10 @@ public class PowerScheduleService {
 
                 // 1. 批量写日志表
                 Map<Long, Long> jobId2InstanceId = Maps.newHashMap();
-                log.info("[CronScheduler] These cron jobs will be scheduled: {}.", jobInfos);
+                log.info("[NormalScheduler] These {} jobs will be scheduled: {}.", timeExpressionType.name(), jobInfos);
 
                 jobInfos.forEach(jobInfo -> {
-                    Long instanceId = instanceService.create(jobInfo.getId(), jobInfo.getAppId(), jobInfo.getJobParams(), null, null, jobInfo.getNextTriggerTime());
+                    Long instanceId = instanceService.create(jobInfo.getId(), jobInfo.getAppId(), jobInfo.getJobParams(), null, null, jobInfo.getNextTriggerTime(), null, null).getInstanceId();
                     jobId2InstanceId.put(jobInfo.getId(), instanceId);
                 });
                 instanceInfoRepository.flush();
@@ -164,13 +186,13 @@ public class PowerScheduleService {
                         delay = targetTriggerTime - nowTime;
                     }
 
-                    InstanceTimeWheelService.schedule(instanceId, delay, () -> dispatchService.dispatch(jobInfoDO, instanceId));
+                    InstanceTimeWheelService.schedule(instanceId, delay, () -> dispatchService.dispatch(jobInfoDO, instanceId, Optional.empty(), Optional.empty()));
                 });
 
                 // 3. 计算下一次调度时间（忽略5S内的重复执行，即CRON模式下最小的连续执行间隔为 SCHEDULE_RATE ms）
                 jobInfos.forEach(jobInfoDO -> {
                     try {
-                        refreshJob(jobInfoDO);
+                        refreshJob(timeExpressionType, jobInfoDO);
                     } catch (Exception e) {
                         log.error("[Job-{}] refresh job failed.", jobInfoDO.getId(), e);
                     }
@@ -179,12 +201,12 @@ public class PowerScheduleService {
 
 
             } catch (Exception e) {
-                log.error("[CronScheduler] schedule cron job failed.", e);
+                log.error("[NormalScheduler] schedule {} job failed.", timeExpressionType.name(), e);
             }
         });
     }
 
-    private void scheduleWorkflow(List<Long> appIds) {
+    private void scheduleWorkflowCore(List<Long> appIds) {
 
         long nowTime = System.currentTimeMillis();
         long timeThreshold = nowTime + 2 * SCHEDULE_RATE;
@@ -219,7 +241,7 @@ public class PowerScheduleService {
         });
     }
 
-    private void scheduleFrequentJob(List<Long> appIds) {
+    private void scheduleFrequentJobCore(List<Long> appIds) {
 
         Lists.partition(appIds, MAX_APP_NUM).forEach(partAppIds -> {
             try {
@@ -255,7 +277,9 @@ public class PowerScheduleService {
                             log.info("[FrequentScheduler] disable frequent job,id:{}.", jobInfoDO.getId());
                         } else if (lifeCycle.getStart() == null || lifeCycle.getStart() < System.currentTimeMillis() + SCHEDULE_RATE * 2) {
                             log.info("[FrequentScheduler] schedule frequent job,id:{}.", jobInfoDO.getId());
-                            jobService.runJob(jobInfoDO.getAppId(), jobId, null, Optional.ofNullable(lifeCycle.getStart()).orElse(0L) - System.currentTimeMillis());
+                            RunJobRequest runJobRequest = new RunJobRequest()
+                                    .setAppId(jobInfoDO.getAppId()).setJobId(jobId).setDelay(Optional.ofNullable(lifeCycle.getStart()).orElse(0L) - System.currentTimeMillis());
+                            jobService.runJob(runJobRequest.getAppId(), runJobRequest);
                         }
                     });
                 });
@@ -265,9 +289,9 @@ public class PowerScheduleService {
         });
     }
 
-    private void refreshJob(JobInfoDO jobInfo) {
+    private void refreshJob(TimeExpressionType timeExpressionType, JobInfoDO jobInfo) {
         LifeCycle lifeCycle = LifeCycle.parse(jobInfo.getLifecycle());
-        Long nextTriggerTime = timingStrategyService.calculateNextTriggerTime(jobInfo.getNextTriggerTime(), TimeExpressionType.CRON, jobInfo.getTimeExpression(), lifeCycle.getStart(), lifeCycle.getEnd());
+        Long nextTriggerTime = timingStrategyService.calculateNextTriggerTime(jobInfo.getNextTriggerTime(), timeExpressionType, jobInfo.getTimeExpression(), lifeCycle.getStart(), lifeCycle.getEnd());
 
         JobInfoDO updatedJobInfo = new JobInfoDO();
         BeanUtils.copyProperties(jobInfo, updatedJobInfo);

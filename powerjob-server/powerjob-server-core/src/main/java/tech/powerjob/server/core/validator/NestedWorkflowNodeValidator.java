@@ -1,19 +1,19 @@
 package tech.powerjob.server.core.validator;
 
 import com.alibaba.fastjson.JSON;
+import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
 import tech.powerjob.common.enums.WorkflowNodeType;
 import tech.powerjob.common.exception.PowerJobException;
 import tech.powerjob.common.model.PEWorkflowDAG;
-import tech.powerjob.server.common.constants.SwitchableStatus;
+import tech.powerjob.common.enums.SwitchableStatus;
 import tech.powerjob.server.core.workflow.algorithm.WorkflowDAG;
 import tech.powerjob.server.persistence.remote.model.WorkflowInfoDO;
 import tech.powerjob.server.persistence.remote.model.WorkflowNodeInfoDO;
 import tech.powerjob.server.persistence.remote.repository.WorkflowInfoRepository;
 import tech.powerjob.server.persistence.remote.repository.WorkflowNodeInfoRepository;
 
-import javax.annotation.Resource;
 import java.util.Objects;
 import java.util.Optional;
 
@@ -23,12 +23,12 @@ import java.util.Optional;
  */
 @Component
 @Slf4j
+@RequiredArgsConstructor
 public class NestedWorkflowNodeValidator implements NodeValidator {
 
-    @Resource
-    private WorkflowInfoRepository workflowInfoRepository;
-    @Resource
-    private WorkflowNodeInfoRepository workflowNodeInfoRepository;
+    private final WorkflowInfoRepository workflowInfoRepository;
+
+    private final WorkflowNodeInfoRepository workflowNodeInfoRepository;
 
     @Override
     public void complexValidate(WorkflowNodeInfoDO node, WorkflowDAG dag) {

@@ -1,0 +1,27 @@
+name: Publish package to the Maven Central Repository
+on:
+  # Releases may be deployed locally. Do not publish the same immutable version twice.
+  workflow_dispatch:
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Maven Central Repository
+        uses: actions/setup-java@v4
+        with:
+          java-version: '8'
+          distribution: 'temurin'
+          server-id: central
+          server-username: MAVEN_USERNAME
+          server-password: MAVEN_PASSWORD
+          gpg-private-key: ${{ secrets.MAVEN_GPG_PRIVATE_KEY }}
+          gpg-passphrase: MAVEN_GPG_PASSPHRASE
+      - name: Enable non-interactive signing
+        run: printf '%s\n' 'pinentry-mode loopback' >> "$HOME/.gnupg/gpg.conf"
+      - name: Publish package
+        run: mvn --batch-mode clean deploy -pl powerjob-worker,powerjob-client,powerjob-worker-spring-boot-starter,powerjob-official-processors,powerjob-worker-agent -DskipTests -Prelease -am -DautoPublish=true -DwaitUntil=published
+        env:
+          MAVEN_USERNAME: ${{ secrets.CENTRAL_USERNAME }}
+          MAVEN_PASSWORD: ${{ secrets.CENTRAL_TOKEN }}
+          MAVEN_GPG_PASSPHRASE: ${{ secrets.MAVEN_GPG_PASSPHRASE }}

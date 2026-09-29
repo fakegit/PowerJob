@@ -1,6 +1,7 @@
 package tech.powerjob.agent;
 
 import tech.powerjob.common.RemoteConstant;
+import tech.powerjob.common.enums.Protocol;
 import tech.powerjob.worker.PowerJobWorker;
 import tech.powerjob.worker.common.PowerJobWorkerConfig;
 import tech.powerjob.worker.common.constants.StoreStrategy;
@@ -11,6 +12,9 @@ import picocli.CommandLine;
 import picocli.CommandLine.Command;
 import picocli.CommandLine.Option;
 
+import java.util.ArrayList;
+import java.util.List;
+
 /**
  * powerjob-worker-agent entry
  *
@@ -18,14 +22,17 @@ import picocli.CommandLine.Option;
  * @since 2020/5/20
  */
 @Slf4j
-@Command(name = "PowerJobAgent", mixinStandardHelpOptions = true, version = "4.0.0", description = "powerjob-worker agent")
+@Command(name = "PowerJobAgent", mixinStandardHelpOptions = true, version = "5.1.6", description = "powerjob-worker agent")
 public class MainApplication implements Runnable {
 
     @Option(names = {"-a", "--app"}, description = "worker-agent's name", required = true)
     private String appName;
 
-    @Option(names = {"-p", "--port"}, description = "akka ActorSystem working port, not recommended to change")
+    @Option(names = {"-p", "--port"}, description = "transporter working port, not recommended to change")
     private Integer port = RemoteConstant.DEFAULT_WORKER_PORT;
+
+    @Option(names = {"-o", "--protocol"}, description = "transporter protocol, AKKA or HTTP")
+    private String protocol = Protocol.AKKA.name();
 
     @Option(names = {"-e", "--persistence"}, description = "storage strategy, DISK or MEMORY")
     private String storeStrategy = "DISK";
@@ -35,6 +42,9 @@ public class MainApplication implements Runnable {
 
     @Option(names = {"-l", "--length"}, description = "ProcessResult#msg max length")
     private int length = 1024;
+
+    @Option(names = {"-t", "--tag"}, description = "worker-agent's tag")
+    private String tag;
 
     public static void main(String[] args) {
         CommandLine commandLine = new CommandLine(new MainApplication());
@@ -49,12 +59,14 @@ public class MainApplication implements Runnable {
 
             cfg.setAppName(appName);
             cfg.setPort(port);
-            cfg.setServerAddress(Splitter.on(",").splitToList(server));
+            List<String> servers = new ArrayList<>(Splitter.on(",").splitToList(server));
+            cfg.setServerAddress(servers);
             cfg.setStoreStrategy(StoreStrategy.MEMORY.name().equals(storeStrategy) ? StoreStrategy.MEMORY : StoreStrategy.DISK);
             cfg.setMaxResultLength(length);
+            cfg.setTag(tag);
+            cfg.setProtocol(Protocol.of(protocol));
 
-            PowerJobWorker worker = new PowerJobWorker();
-            worker.setConfig(cfg);
+            PowerJobWorker worker = new PowerJobWorker(cfg);
 
             worker.init();
         }catch (Exception e) {
